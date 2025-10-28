@@ -1,0 +1,7 @@
+hikari==2.3.5
+hikari-lightbulb==3.1.2
+pandas==2.3.2
+openpyxl==3.1.5
+sqlalchemy==2.0.43
+unidecode==1.4.0
+dotenv==1.1.1
