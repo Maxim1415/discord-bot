@@ -25,6 +25,7 @@ def run():
 def keep_alive():
     Thread(target=run).start()
 
+keep_alive()
 
 bot = hikari.GatewayBot(DISCORD_TOKEN)
 client = lightbulb.client_from_app(bot)
@@ -446,5 +447,4 @@ class merits_rating(
         )
         os.remove(file_path)
 
-keep_alive()
 bot.run()
