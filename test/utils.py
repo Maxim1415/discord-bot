@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 from unidecode import unidecode
 from database import load_players
 
@@ -8,6 +9,10 @@ def fmt(value):
         return f"{value:,}".replace(",", " ")
     except (ValueError, TypeError):
         return value
+
+def visual_len(s: str) -> int:
+    clean = re.sub(r'[^\w\s:]', '', s)
+    return len(clean)
 
 async def nickname_autocomplete(ctx):
     current_value: str = ctx.focused.value or ""

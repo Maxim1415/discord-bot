@@ -1,9 +1,14 @@
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from config import DATABASE_URL
 
 engine = create_engine(DATABASE_URL)
+
+def table_exists(table_name: str) -> bool:
+    inspector = inspect(engine)
+    return inspector.has_table(table_name)
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = (
         df.columns.str.strip()  # прибрати пробіли з початку та кінця
@@ -66,11 +71,27 @@ def add_merits_percent(df: pd.DataFrame) -> pd.DataFrame:
         {col.split(".")[1] for col in df.columns if col.startswith("power.")},
         key=int
     )
-    print(reports)
     last = reports[-1]
     df["merits_%"] = df.apply(lambda row: round((row[f"merits.{last}"] / row[f"power.{last}"] * 100), 2) if row[f"power.{last}"] > 0 else 0, axis=1)
 
     return df
+
+def clear_guild_data(guild_id: int) -> bool:
+    tables_to_drop = [
+        f"guild_{guild_id}",
+        f"guild_{guild_id}_old",
+        f"names_{guild_id}"
+    ]
+
+    try:
+        with engine.begin() as conn:
+            for table in tables_to_drop:
+                conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE;"))
+        return True
+
+    except SQLAlchemyError as e:
+        print(f"⚠️ DB Error while clearing guild {guild_id}: {e}")
+        return False
 
 def save_table(df: pd.DataFrame, guild_id: int, archive: bool):
     df = normalize_columns(df)
@@ -81,11 +102,9 @@ def save_table(df: pd.DataFrame, guild_id: int, archive: bool):
     if df is None or df.empty:
         return False
 
-    # Архівація при потребі (робимо копію ПЕРЕД видаленням)
     if archive:
         try:
             old_df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
-            # зберігаємо повну копію в *_old
             old_df.to_sql(old_table_name, engine, if_exists="replace", index=False)
         except Exception:
             old_df = None
@@ -96,14 +115,12 @@ def save_table(df: pd.DataFrame, guild_id: int, archive: bool):
             old_table = None
 
         df = mark_new_players(df, old_table, old_df)
-    # Завжди чистимо основну
     try:
         with engine.begin() as conn:
             conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
     except Exception as e:
-        print(f"⚠️ Помилка при очищенні таблиці {table_name}: {e}")
+        print(f"⚠️ Error clearing table {table_name}: {e}")
 
-    # Заливаємо нові дані з нуля    
     return save_file_to_db(df, guild_id)
 def save_file_to_db(df: pd.DataFrame, guild_id: int):
     df = normalize_columns(df)
@@ -114,14 +131,18 @@ def save_file_to_db(df: pd.DataFrame, guild_id: int):
 
     df["lord_id"] = df["lord_id"].fillna(0).astype("int64")
     df = df[df["lord_id"] > 0]
-    # Завантажуємо стару таблицю
     try:
         old_df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
     except Exception:
         old_df = pd.DataFrame(columns=key_cols)
     if not old_df.empty and "lord_id" in old_df.columns:
         old_df = old_df[old_df["lord_id"].isin(df["lord_id"])].copy()
-    # Позначаємо нових гравців
+
+    if not old_df.empty:
+        report_cols = [col for col in old_df.columns if col.startswith("power.")]
+        report_count = len(report_cols)
+        if report_count >= 3:
+            return False
 
     try:
         old_table = pd.read_sql(f"SELECT * FROM {old_table_name}", engine)
@@ -130,7 +151,6 @@ def save_file_to_db(df: pd.DataFrame, guild_id: int):
 
     df = mark_new_players(df, old_table, old_df)
 
-    # Підготовка нових колонок з індексами
     new_df = df.copy()
     for col in df.columns:
         if col in key_cols:
@@ -142,7 +162,6 @@ def save_file_to_db(df: pd.DataFrame, guild_id: int):
             index += 1
             new_col = f"{base_col}.{index}"
         new_df = new_df.rename(columns={col: new_col})
-    # Зливаємо таблиці по ключу lord_id, оновлюючи останні дані
     old_map = old_df.set_index("lord_id").to_dict(orient="index")
     for _, row in new_df.iterrows():
         lord_id = row["lord_id"]
@@ -155,9 +174,7 @@ def save_file_to_db(df: pd.DataFrame, guild_id: int):
                     if not pd.isna(new_val):
                         old_map[lord_id][col] = new_val
         else:
-            # створюємо словник з усіма старими колонками
             row_dict = {col: 0 for col in old_df.columns if col != "lord_id"}
-            # заповнюємо значеннями з нового звіту
             for col in new_df.columns:
                 if col != "lord_id":
                     row_dict[col] = row[col]
@@ -166,13 +183,10 @@ def save_file_to_db(df: pd.DataFrame, guild_id: int):
     merged = pd.DataFrame.from_dict(old_map, orient="index").reset_index()
     merged = merged.rename(columns={"index": "lord_id"})
 
-    # Додаємо відсоток заслуг
     merged = add_merits_percent(merged)
 
-    # Зберігаємо у базу
     merged.to_sql(table_name, engine, if_exists="replace", index=False)
 
-    # Оновлюємо глобальні імена
     update_global_names(guild_id, merged)
 
     return True
@@ -196,6 +210,25 @@ def load_previous_kvk(guild_id):
     query = f"SELECT * FROM {table_name}"
     old_df = pd.read_sql(query, engine)
     return old_df
+
+def delete_player(guild_id, player_id, nickname):
+    table_name = f"guild_{guild_id}"
+    player = None
+    with engine.begin() as conn:
+        if nickname:
+            result = conn.execute(text(f'SELECT * FROM "{table_name}" WHERE "name" = :name'), {"name": nickname}).fetchone()
+            if result:
+                player = dict(result._mapping)
+                conn.execute(text(f'DELETE FROM "{table_name}" WHERE "name" = :name'), {"name": nickname})
+        elif player_id:
+            result = conn.execute(text(f'SELECT * FROM "{table_name}" WHERE "lord_id" = :id'), {"id": player_id}).fetchone()
+            if result:
+                player = dict(result._mapping)
+                conn.execute(text(f'DELETE FROM "{table_name}" WHERE "lord_id" = :id'), {"id": player_id})
+    if player:
+        return f"Player {player.get('name')} removed"
+    else:
+        return "Player not found"
 
 def update_global_names(guild_id, df: pd.DataFrame):
     table_name = f"names_{guild_id}"
@@ -226,15 +259,16 @@ def update_global_names(guild_id, df: pd.DataFrame):
 
     if updates:
         with engine.begin() as conn:
-            conn.execute(
-                text(f"UPDATE {table_name} SET name = :name WHERE lord_id = :lord_id"),
-                updates
+            for u in updates:
+                conn.execute(
+                    text(f"UPDATE {table_name} SET name = :name WHERE lord_id = :lord_id"),
+                    u
             )
 
     if inserts:
         with engine.begin() as conn:
             conn.execute(
-                text(f"INSERT INTO {table_name} (lord_id, name) VALUES (:lord_id, :name)"
+                text(f"INSERT INTO {table_name} (lord_id, name) VALUES (:lord_id, :name) "
                      f"ON CONFLICT(lord_id) DO NOTHING"),
                 inserts    
             )

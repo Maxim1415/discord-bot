@@ -1,4 +1,6 @@
 import hikari
+from hikari.api import special_endpoints
+from lightbulb.components import base
 import lightbulb
 import pandas as pd
 import os
@@ -8,8 +10,8 @@ from config import *
 from unidecode import unidecode
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, text
-from utils import fmt, nickname_autocomplete, category_autocomplete
-from database import clean_dataframe, save_table, save_file_to_db, load_players, load_previous_kvk, engine
+from utils import fmt, visual_len, nickname_autocomplete, category_autocomplete
+from database import table_exists, clean_dataframe, save_table, save_file_to_db, load_players, load_previous_kvk, delete_player, engine, clear_guild_data
 from flask import Flask
 from threading import Thread
 
@@ -31,21 +33,52 @@ bot = hikari.GatewayBot(DISCORD_TOKEN)
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
+class ConfirmationMenu(lightbulb.components.Menu):
+    def __init__(self, member: hikari.Member) -> None:
+        super().__init__()
+        self.member = member
+        self.cancel = self.add_interactive_button(hikari.ButtonStyle.DANGER, self.on_cancel, label="Cancel")
+        self.confirm = self.add_interactive_button(hikari.ButtonStyle.SUCCESS, self.on_confirm, label="Confirm")
+        self.confirmed: bool = False
+    async def on_cancel(self, ctx: lightbulb.components.MenuContext) -> None:
+        await ctx.respond("Cancelled", edit=True, components=[])
+        ctx.stop_interacting()
+
+    async def on_confirm(self, ctx:lightbulb.components.MenuContext) -> None:
+        await ctx.respond("Confirmed", edit=True, components=[])
+        self.confirmed = True
+        ctx.stop_interacting()
 
 
-# CHANNEL_ID = 1410340027279478904
+@client.register()
+class clear_data(
+    lightbulb.SlashCommand,
+    name="clear_data",
+    description="Remove all reports",
+    default_member_permissions=hikari.Permissions.ADMINISTRATOR,
+):
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context) -> None:
+        guild_id = ctx.guild_id
+        confirm_menu = ConfirmationMenu(ctx.member)
+        resp = await ctx.respond(
+            f"Are you sure you want to clear data?", components=confirm_menu, ephemeral=True
+        )
+        try:
+            await confirm_menu.attach(client, timeout=30)
+        except asyncio.TimeoutError:
+            await ctx.edit_response(resp, "Timed out", edit=True, components=[])
 
-# @bot.listen(hikari.StartedEvent)
-# async def on_started(event: hikari.StartedEvent) -> None:
-#     instructions = (
-#         "📌 User manual:\n"
-#         "• `/stats` — player stats\n"
-#         "• Example - /stats nickname PlayerNickname or id PlayerID\n"
-#         "• `/rating` — players rating\n"
-#         "• Example - /rating Merits / Units Killed / Units Dead"
-#     )
+        if not confirm_menu.confirmed:
+            await ctx.respond("Cancelled", ephemeral=True)
+            return
+        
+        success = clear_guild_data(guild_id)
+        if success:
+            await ctx.respond(f"✅ Data cleared", ephemeral=True)
+        else:
+            await ctx.respond(f"❌ Error", ephemeral=True)
 
-#     await bot.rest.create_message(CHANNEL_ID, instructions)
 
 @client.register()
 class add_new_file(
@@ -61,19 +94,19 @@ class add_new_file(
         guild_id = ctx.guild_id
         guild_file: hikari.Attachment = self.file
         if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
-            await ctx.respond("Need csv or excel file!", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("Need csv or excel file!", ephemeral=True)
             return
 
-        temp_path = f"tmp/{guild_file.filename}"
+        temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
         os.makedirs("tmp", exist_ok=True)
 
         await guild_file.save(temp_path, force=True)
         if guild_file.filename.endswith(".csv"):
             df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
-        else:  # xlsx
+        else:
             df = pd.read_excel(temp_path, engine="openpyxl")
 
-        message = await ctx.respond("⏳ Processing...", flags=hikari.MessageFlag.EPHEMERAL)
+        message = await ctx.respond("⏳ Processing...", ephemeral=True)
         save_table(df, guild_id, True)
         await ctx.edit_response(message, "✅ Table replaced and old table archived successfully!")
         os.remove(temp_path)
@@ -92,18 +125,18 @@ class change_new_file(
         guild_id = ctx.guild_id
         guild_file: hikari.Attachment = self.file
         if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
-            await ctx.respond("Need csv or excel file!", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("Need csv or excel file!", ephemeral=True)
             return
-        temp_path = f"tmp/{guild_file.filename}"
+        temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
         os.makedirs("tmp", exist_ok=True)
         await guild_file.save(temp_path, force=True)
 
         if guild_file.filename.endswith(".csv"):
             df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
-        else:  # xlsx
+        else:
             df = pd.read_excel(temp_path, engine="openpyxl")
 
-        message = await ctx.respond("⏳ Processing...", flags=hikari.MessageFlag.EPHEMERAL)
+        message = await ctx.respond("⏳ Processing...", ephemeral=True)
         save_table(df, guild_id, False)
         await ctx.edit_response(message, "✅ Table replaced successfully!")
         os.remove(temp_path)
@@ -122,24 +155,23 @@ class add_report(
         guild_id = ctx.guild_id
         guild_file: hikari.Attachment = self.file
         if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
-            await ctx.respond("Need csv or excel file!", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("Need csv or excel file!", ephemeral=True)
             return
         
-        temp_path = f"tmp/{guild_file.filename}"
+        temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
         os.makedirs("tmp", exist_ok=True)
         await guild_file.save(temp_path, force=True)
         if guild_file.filename.endswith(".csv"):
             df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
         else:  # xlsx
             df = pd.read_excel(temp_path, engine="openpyxl")
-        message = await ctx.respond("⏳ Processing...", flags=hikari.MessageFlag.EPHEMERAL)
+        message = await ctx.respond("⏳ Processing...", ephemeral=True)
         success = save_file_to_db(df, guild_id)
         if success:
             await ctx.edit_response(message, "✅ File saved!")
         else:
             await ctx.edit_response(message, "❌ You have already added 3 reports!")
         os.remove(temp_path)
-
 
 
 @client.register()
@@ -155,8 +187,14 @@ class stats(
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
-        _, df = load_players(ctx.guild_id)
+        guild_id = ctx.guild_id
 
+        if not table_exists(f"guild_{guild_id}"):
+            await ctx.respond("No table loaded", ephemeral=True)
+            return
+        
+        _, df = load_players(guild_id)
+        
         nickname = self.name
         player_id = self.player_id
 
@@ -168,7 +206,7 @@ class stats(
             player = df.loc[df["lord_id"] == player_id]
 
         if player is None or player.empty:
-            await ctx.respond("Player doesn't exist", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("Player doesn't exist", ephemeral=True)
         else:
             row = player.iloc[0]
             reports = sorted(
@@ -189,7 +227,6 @@ class stats(
                 msg += f"⚔️Units killed: {fmt(row.get(f'units_killed.{r}', 0))}\n"
                 msg += f"💀Units dead: {fmt(row.get(f'units_dead.{r}', 0))}\n\n"
 
-            # підсумки, якщо є хоча б 2 звіти
             if len(reports) >= 2:
                 start = reports[0]
                 end = reports[-1]
@@ -208,7 +245,7 @@ class stats(
                 msg += f"💀Season units dead: {fmt(dead_end - dead_start)}\n"
                 msg += f"🏅Season merits: {fmt(row.get(f'merits.{end}', 0))}\n"
             
-            message = await ctx.respond(msg, flags=hikari.MessageFlag.EPHEMERAL)
+            message = await ctx.respond(msg, ephemeral=True)
             
 @client.register()
 class compare_kvk(
@@ -219,11 +256,16 @@ class compare_kvk(
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
-        _, df = load_players(ctx.guild_id)
-        old_df = load_previous_kvk(ctx.guild_id)
-        if old_df is None:
-            await ctx.respond("⚠️ Previous kvk doesn't exist!", flags=hikari.MessageFlag.EPHEMERAL)
+        guild_id = ctx.guild_id
+        if not table_exists(f"guild_{guild_id}"):
+            await ctx.respond("No table loaded", ephemeral=True)
             return
+        if not table_exists(f"guild_{guild_id}_old"):
+            await ctx.respond("Old table not loaded", ephemeral=True)
+            return
+        _, df = load_players(guild_id)
+        old_df = load_previous_kvk(guild_id)
+
         reports_new = sorted(
             {col.split(".")[1] for col in df.columns if col.startswith("power.")},
             key=int
@@ -232,7 +274,6 @@ class compare_kvk(
             {col.split(".")[1] for col in old_df.columns if col.startswith("power.")},
             key=int
         )
-        # for i, r in enumerate(reports_new, start=1):
         if len(reports_new) >= 2:
             start_new = reports_new[0]
             end_new = reports_new[-1]
@@ -242,11 +283,8 @@ class compare_kvk(
             df_totals_units_killed = df_filtered[f"units_killed.{end_new}"].sum() - df_filtered[f"units_killed.{start_new}"].sum()
             df_totals_units_dead = df_filtered[f"units_dead.{end_new}"].sum() - df_filtered[f"units_dead.{start_new}"].sum()
         else:
-            df_filtered = df[df[f"power.1"] >=15000000].copy()
-            df_totals_power = df_filtered[f"power.1"].sum()
-            df_totals_merits = df_filtered[f"merits.1"].sum()
-            df_totals_units_killed = df_filtered[f"units_killed.1"].sum()
-            df_totals_units_dead = df_filtered[f"units_dead.1"].sum()
+            await ctx.respond("The new kvk must have at least 2 reports", ephemeral=True)
+            return
 
         if len(reports_old) >= 2:
             start_old = reports_old[0]
@@ -257,23 +295,39 @@ class compare_kvk(
             old_df_totals_units_killed = old_df_filtered[f"units_killed.{end_old}"].sum() - old_df_filtered[f"units_killed.{start_old}"].sum()
             old_df_totals_units_dead = old_df_filtered[f"units_dead.{end_old}"].sum() - old_df_filtered[f"units_dead.{start_old}"].sum()
         else:
-            old_df_filtered = old_df[old_df[f"power.1"] >=15000000].copy()
-            old_df_totals_power = old_df_filtered[f"power.1"].sum()
-            old_df_totals_merits = old_df_filtered[f"merits.1"].sum()
-            old_df_totals_units_killed = old_df_filtered[f"units_killed.1"].sum()
-            old_df_totals_units_dead = old_df_filtered[f"units_dead.1"].sum()
+            await ctx.respond("The old kvk must have at least 2 reports", ephemeral=True)
+            return
+
+        old_values = [
+            f"⚡ Power: {fmt(int(old_df_totals_power))}",
+            f"🏅 Merits: {fmt(int(old_df_totals_merits))}",
+            f"⚔️ Units killed: {fmt(int(old_df_totals_units_killed))}",
+            f"💀 Units dead: {fmt(int(old_df_totals_units_dead))}",
+        ]
+
+        new_values = [
+            f"⚡ Power: {fmt(int(df_totals_power))}",
+            f"🏅 Merits: {fmt(int(df_totals_merits))}",
+            f"⚔️ Units killed: {fmt(int(df_totals_units_killed))}",
+            f"💀 Units dead: {fmt(int(df_totals_units_dead))}",
+        ]
+
+        max_len = max(visual_len(s) for s in old_values) + 1
+
+        lines = [
+            f"{old.ljust(max_len)}| {new}"
+            for old, new in zip(old_values, new_values)
+        ]
 
         msg = (
             f"📊 **Compare current and previous kvk results**\n\n"
             "```\n"
-            f"🟡 Previous Season        | 🔴 Current Season\n"
-            f"⚡ Power: {fmt(int(old_df_totals_power))}        | ⚡ Power: {fmt(int(df_totals_power))}\n"
-            f"🏅 Merits: {fmt(int(old_df_totals_merits))}      | 🏅 Merits: {fmt(int(df_totals_merits))}\n"
-            f"⚔️ Units killed: {fmt(int(old_df_totals_units_killed))} | ⚔️ Units killed: {fmt(int(df_totals_units_killed))}\n"
-            f"💀 Units dead: {fmt(int(old_df_totals_units_dead))}    | 💀 Units dead: {fmt(int(df_totals_units_dead))}\n"
-            "```"
+            f"🟡 Previous Season{' ' * (max_len - len('🟡 Previous Season'))}| 🔴 Current Season\n"
+            + "\n".join(lines) +
+            "\n```"
         )
-        message = await ctx.respond(msg, flags=hikari.MessageFlag.EPHEMERAL)
+
+        message = await ctx.respond(msg, ephemeral=True)
 
 
 @client.register()
@@ -290,7 +344,11 @@ class rating(
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
-        _, df = load_players(ctx.guild_id)
+        guild_id = ctx.guild_id
+        if not table_exists(f"guild_{guild_id}"):
+            await ctx.respond("No table loaded", ephemeral=True)
+            return
+        _, df = load_players(guild_id)
 
         keywords = ["Merits", "Units", "Power"]
 
@@ -304,14 +362,14 @@ class rating(
         if category == "Merits":
             df_filtered = df[df["new_player"] != "migrant"].copy()
             if df_filtered.empty:
-                await ctx.respond("⚠️ Немає даних для Units Killed", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("⚠️ Немає даних для Units Killed", ephemeral=True)
                 return
             data = df_filtered[["name", f"merits.{last}"]].sort_values(by=[f"merits.{last}"], ascending=False).head(20)
             col = f"merits.{last}"
         elif category == "Units Killed":
             df_filtered = df[df["new_player"] != "migrant"].copy()
             if df_filtered.empty:
-                await ctx.respond("⚠️ Немає даних для Units Killed", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("⚠️ Немає даних для Units Killed", ephemeral=True)
                 return
             if len(reports) == 1:
                 data = df_filtered[["name", f"units_killed.{last}"]].sort_values(by=[f"units_killed.{last}"], ascending=False).head(20)
@@ -323,7 +381,7 @@ class rating(
         elif category == "Units Dead":
             df_filtered = df[df["new_player"] != "migrant"].copy()
             if df_filtered.empty:
-                await ctx.respond("⚠️ Немає даних для Units Dead", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("⚠️ Немає даних для Units Dead", ephemeral=True)
                 return
             if len(reports) == 1:
                 data = df_filtered[["name", f"units_dead.{last}"]].sort_values(by=[f"units_dead.{last}"], ascending=False).head(20)
@@ -333,7 +391,7 @@ class rating(
                 data = df_filtered[["name", "Diff"]].sort_values(by="Diff", ascending=False).head(20)
                 col = "Diff"
         else:
-            await ctx.respond("⚠️ Unknown category", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("⚠️ Unknown category", ephemeral=True)
             return
         
         lines = []
@@ -346,7 +404,7 @@ class rating(
         else:
             msg = f"🏆 **Top 20 by season {category}** 🏆\n\n" + "\n".join(lines)
 
-        await ctx.respond(msg, flags=hikari.MessageFlag.EPHEMERAL)
+        await ctx.respond(msg, ephemeral=True)
 
 @client.register()
 class remove_player(
@@ -361,30 +419,14 @@ class remove_player(
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
-        _, df = load_players(ctx.guild_id)
-        table_name = f"guild_{ctx.guild_id}"
+        guild_id = ctx.guild_id
+        if not table_exists(f"guild_{guild_id}"):
+            await ctx.respond("No table loaded", ephemeral=True)
+            return
         nickname = self.name
         player_id = self.player_id
 
-        player = None
-        with engine.begin() as conn:
-            if nickname:
-                result = conn.execute(text(f'SELECT * FROM "{table_name}" WHERE "name" = :name'), {"name": nickname}).fetchone()
-                if result:
-                    player = dict(result._mapping)
-                    conn.execute(text(f'DELETE FROM "{table_name}" WHERE "name" = :name'), {"name": nickname})
-            elif player_id:
-                result = conn.execute(text(f'SELECT * FROM "{table_name}" WHERE "lord_id" = :id'), {"id": player_id}).fetchone()
-                if result:
-                    player = dict(result._mapping)
-                    conn.execute(text(f'DELETE FROM "{table_name}" WHERE "lord_id" = :id'), {"id": player_id})
-            else:
-                await ctx.respond("Enter name or ID", flags=hikari.MessageFlag.EPHEMERAL)
-                return
-        if player:
-            await ctx.respond(f"Player {player.get('name')} removed", flags=hikari.MessageFlag.EPHEMERAL)
-        else:
-            await ctx.respond("Player not fount", flags=hikari.MessageFlag.EPHEMERAL)
+        await ctx.respond(delete_player(guild_id, player_id, nickname), ephemeral=True)
 
 @client.register()
 class merits_rating(
@@ -397,12 +439,12 @@ class merits_rating(
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
-        try:
-            _, df = load_players(ctx.guild_id)
-        except Exception:
-            await ctx.respond("❌ The table doesn't exist!", flags=hikari.MessageFlag.EPHEMERAL)
+        guild_id = ctx.guild_id
+        table_name = f"guild_{guild_id}"
+        if not table_exists(table_name):
+            await ctx.respond("No table loaded", ephemeral=True)
             return
-        table_name = f"guild_{ctx.guild_id}"
+        _, df = load_players(guild_id)
         min_percent = self.min_percent
         max_percent = self.max_percent
         reports = sorted(
@@ -412,12 +454,10 @@ class merits_rating(
         first = reports[0]
         last = reports[-1]
 
-        # Перевіряємо, що колонка merits_% існує
         if "merits_%" not in df.columns:
-            await ctx.respond("❌ Add a report first!", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("❌ Add a report first!", ephemeral=True)
             return
 
-        # Фільтрація по умовах
         filtered = df[
             (df["merits_%"] >= min_percent) &
             (df["merits_%"] <= max_percent) &
@@ -425,13 +465,11 @@ class merits_rating(
         ].copy()
 
         if filtered.empty:
-            await ctx.respond("ℹ️ There are no eligible players.", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond("ℹ️ There are no eligible players.", ephemeral=True)
             return
 
-        # Сортування
         filtered = filtered.sort_values("merits_%", ascending=False)
 
-        # Формуємо таблицю (Markdown)
         file_path = f"merits_list_{ctx.guild_id}_{int(time.time())}.xlsx"
         filtered.to_excel(
             file_path,
