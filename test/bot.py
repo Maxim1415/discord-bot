@@ -93,24 +93,31 @@ class add_new_file(
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
         guild_file: hikari.Attachment = self.file
-        if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
-            await ctx.respond("Need csv or excel file!", ephemeral=True)
-            return
 
-        temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
-        os.makedirs("tmp", exist_ok=True)
+        message = await ctx.respond("⏳ Downloading file...", ephemeral=True)
+        try:
+            if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
+                await ctx.respond("Need csv or excel file!", ephemeral=True)
+                return
 
-        await guild_file.save(temp_path, force=True)
-        if guild_file.filename.endswith(".csv"):
-            df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
-        else:
-            df = pd.read_excel(temp_path, engine="openpyxl")
+            temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
+            os.makedirs("tmp", exist_ok=True)
 
-        message = await ctx.respond("⏳ Processing...", ephemeral=True)
-        save_table(df, guild_id, True)
-        await ctx.edit_response(message, "✅ Table replaced and old table archived successfully!")
-        os.remove(temp_path)
-        
+            await guild_file.save(temp_path, force=True)
+            if guild_file.filename.endswith(".csv"):
+                df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
+            else:
+                df = pd.read_excel(temp_path, engine="openpyxl")
+
+            save_table(df, guild_id, True)
+            await ctx.edit_response(message, "✅ Table replaced and old table archived successfully!")
+        except Exception as e:
+            await ctx.edit_response(message, f"❌ Processing error: {e}")
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
 @client.register()
 class change_new_file(
     lightbulb.SlashCommand,
@@ -124,22 +131,29 @@ class change_new_file(
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
         guild_file: hikari.Attachment = self.file
-        if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
-            await ctx.respond("Need csv or excel file!", ephemeral=True)
-            return
-        temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
-        os.makedirs("tmp", exist_ok=True)
-        await guild_file.save(temp_path, force=True)
 
-        if guild_file.filename.endswith(".csv"):
-            df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
-        else:
-            df = pd.read_excel(temp_path, engine="openpyxl")
+        message = await ctx.respond("⏳ Downloading file...", ephemeral=True)
+        try:
+            if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
+                await ctx.respond("Need csv or excel file!", ephemeral=True)
+                return
+            temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
+            os.makedirs("tmp", exist_ok=True)
+            await guild_file.save(temp_path, force=True)
 
-        message = await ctx.respond("⏳ Processing...", ephemeral=True)
-        save_table(df, guild_id, False)
-        await ctx.edit_response(message, "✅ Table replaced successfully!")
-        os.remove(temp_path)
+            if guild_file.filename.endswith(".csv"):
+                df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
+            else:
+                df = pd.read_excel(temp_path, engine="openpyxl")
+
+            save_table(df, guild_id, False)
+            await ctx.edit_response(message, "✅ Table replaced successfully!")
+        except Exception as e:
+            await ctx.edit_response(message, f"❌ Processing error: {e}")
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
         
 @client.register()
 class add_report(
@@ -154,24 +168,32 @@ class add_report(
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
         guild_file: hikari.Attachment = self.file
-        if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
-            await ctx.respond("Need csv or excel file!", ephemeral=True)
-            return
-        
-        temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
-        os.makedirs("tmp", exist_ok=True)
-        await guild_file.save(temp_path, force=True)
-        if guild_file.filename.endswith(".csv"):
-            df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
-        else:  # xlsx
-            df = pd.read_excel(temp_path, engine="openpyxl")
-        message = await ctx.respond("⏳ Processing...", ephemeral=True)
-        success = save_file_to_db(df, guild_id)
-        if success:
-            await ctx.edit_response(message, "✅ File saved!")
-        else:
-            await ctx.edit_response(message, "❌ You have already added 3 reports!")
-        os.remove(temp_path)
+
+        message = await ctx.respond("⏳ Downloading file...", ephemeral=True)
+        try:
+            if not guild_file.filename.endswith((".csv", ".xlsx", ".xls")):
+                await ctx.respond("Need csv or excel file!", ephemeral=True)
+                return
+            
+            temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
+            os.makedirs("tmp", exist_ok=True)
+            await guild_file.save(temp_path, force=True)
+            if guild_file.filename.endswith(".csv"):
+                df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
+            else:  # xlsx
+                df = pd.read_excel(temp_path, engine="openpyxl")
+            success = save_file_to_db(df, guild_id)
+            if success:
+                await ctx.edit_response(message, "✅ File saved!")
+            else:
+                await ctx.edit_response(message, "❌ You have already added 3 reports!")
+
+        except Exception as e:
+            await ctx.edit_response(message, f"❌ Processing error: {e}")
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
 
 @client.register()
@@ -188,6 +210,7 @@ class stats(
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
+        await ctx.defer(ephemeral=True)
 
         if not table_exists(f"guild_{guild_id}"):
             await ctx.respond("No table loaded", ephemeral=True)
@@ -257,6 +280,7 @@ class compare_kvk(
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
+        await ctx.defer(ephemeral=True)
         if not table_exists(f"guild_{guild_id}"):
             await ctx.respond("No table loaded", ephemeral=True)
             return
@@ -345,6 +369,8 @@ class rating(
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
+        await ctx.defer(ephemeral=True)
+
         if not table_exists(f"guild_{guild_id}"):
             await ctx.respond("No table loaded", ephemeral=True)
             return
@@ -420,6 +446,7 @@ class remove_player(
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
+        await ctx.defer(ephemeral=True)
         if not table_exists(f"guild_{guild_id}"):
             await ctx.respond("No table loaded", ephemeral=True)
             return
@@ -441,6 +468,8 @@ class merits_rating(
     async def invoke(self, ctx: lightbulb.Context) -> None:
         guild_id = ctx.guild_id
         table_name = f"guild_{guild_id}"
+        await ctx.defer(ephemeral=True)
+
         if not table_exists(table_name):
             await ctx.respond("No table loaded", ephemeral=True)
             return
