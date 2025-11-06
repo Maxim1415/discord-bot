@@ -5,3 +5,4 @@ openpyxl==3.1.5
 sqlalchemy==2.0.43
 unidecode==1.4.0
 python-dotenv==1.1.1
+psucopg2-binary==2.9.10
