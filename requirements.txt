@@ -6,3 +6,7 @@ sqlalchemy==2.0.43
 unidecode==1.4.0
 python-dotenv==1.1.1
 psycopg2-binary==2.9.10
+Flask==3.1.2
+SQLAlchemy==2.0.43
+Unidecode==1.4.0
+numpy==2.3.2
