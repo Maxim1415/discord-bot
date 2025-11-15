@@ -104,6 +104,11 @@ class add_new_file(
             os.makedirs("tmp", exist_ok=True)
 
             await guild_file.save(temp_path, force=True)
+            if guild_file.filename.endswith(".xls"):
+                xlsx_path = temp_path + "x"
+                df_convert = pd.read_excel(temp_path, engine="xlrd")
+                df_convert.to_excel(xlsx_path, index=False)
+                temp_path = xlsx_path
             if guild_file.filename.endswith(".csv"):
                 df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
             else:
@@ -140,7 +145,11 @@ class change_new_file(
             temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
             os.makedirs("tmp", exist_ok=True)
             await guild_file.save(temp_path, force=True)
-
+            if guild_file.filename.endswith(".xls"):
+                xlsx_path = temp_path + "x"
+                df_convert = pd.read_excel(temp_path, engine="xlrd")
+                df_convert.to_excel(xlsx_path, index=False)
+                temp_path = xlsx_path
             if guild_file.filename.endswith(".csv"):
                 df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
             else:
@@ -178,6 +187,11 @@ class add_report(
             temp_path = f"tmp/{guild_id}_{int(time.time())}_{guild_file.filename}"
             os.makedirs("tmp", exist_ok=True)
             await guild_file.save(temp_path, force=True)
+            if guild_file.filename.endswith(".xls"):
+                xlsx_path = temp_path + "x"
+                df_convert = pd.read_excel(temp_path, engine="xlrd")
+                df_convert.to_excel(xlsx_path, index=False)
+                temp_path = xlsx_path
             if guild_file.filename.endswith(".csv"):
                 df = pd.read_csv(temp_path, sep=";", encoding="utf-8")
             else:  # xlsx
